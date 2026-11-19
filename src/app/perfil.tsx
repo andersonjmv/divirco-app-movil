@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
   Text,
@@ -16,7 +17,10 @@ import { AppInput } from "@/components/ui/app-input";
 import { ScreenContainer } from "@/components/ui/screen-container";
 import { supabase } from "@/lib/supabase";
 
-const REDIRECT_URL = "divircoinicial://perfil";
+const CONFIRM_URL = "divircoinicial://perfil";
+const RECOVERY_URL = "divircoinicial://perfil?mode=recovery";
+
+type ScreenMode = "login" | "signup" | "forgot" | "reset";
 
 type Profile = {
   display_name: string | null;
@@ -25,23 +29,34 @@ type Profile = {
 
 export default function PerfilScreen() {
   const router = useRouter();
-  const { code } = useLocalSearchParams<{ code?: string }>();
+
+  const params = useLocalSearchParams<{
+    code?: string;
+    mode?: string;
+  }>();
+
   const processedCode = useRef<string | null>(null);
 
-  // Autenticación y perfil
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [registerMode, setRegisterMode] = useState(false);
 
-  // Formulario de acceso y registro
+  const [screenMode, setScreenMode] =
+    useState<ScreenMode>("login");
+
+  // Acceso y registro
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
-  // Edición del perfil
+  // Recuperación
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] =
+    useState("");
+
+  // Edición
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState("");
   const [editCity, setEditCity] = useState("");
@@ -51,7 +66,7 @@ export default function PerfilScreen() {
   const [success, setSuccess] = useState("");
 
   // ============================================
-  // VERIFICAR SESIÓN Y OBSERVAR AUTENTICACIÓN
+  // SESIÓN Y EVENTOS DE AUTENTICACIÓN
   // ============================================
 
   useEffect(() => {
@@ -67,15 +82,18 @@ export default function PerfilScreen() {
       })
       .catch(() => {
         if (!active) return;
-
         setMessage("No pudimos verificar la sesión.");
         setLoading(false);
       });
 
     const { data: listener } =
-      supabase.auth.onAuthStateChange((_event, session) => {
-        if (active) {
-          setUser(session?.user ?? null);
+      supabase.auth.onAuthStateChange((event, session) => {
+        if (!active) return;
+
+        setUser(session?.user ?? null);
+
+        if (event === "PASSWORD_RECOVERY") {
+          setScreenMode("reset");
         }
       });
 
@@ -86,10 +104,12 @@ export default function PerfilScreen() {
   }, []);
 
   // ============================================
-  // CONFIRMAR CORREO MEDIANTE PKCE
+  // ENLACES DE CONFIRMACIÓN Y RECUPERACIÓN
   // ============================================
 
   useEffect(() => {
+    const code = params.code;
+
     if (!code || processedCode.current === code) {
       return;
     }
@@ -98,10 +118,9 @@ export default function PerfilScreen() {
 
     let active = true;
 
-    async function confirmEmail() {
+    async function processAuthLink() {
       setLoading(true);
       setMessage("");
-      setSuccess("");
 
       try {
         const { error } =
@@ -110,35 +129,60 @@ export default function PerfilScreen() {
         if (!active) return;
 
         if (error) {
-          setMessage(
-            "No pudimos confirmar el correo. " +
-            "El enlace puede haber expirado."
+          Alert.alert(
+            "Enlace no válido",
+            "No pudimos procesar el enlace. Puede haber expirado."
           );
+          router.replace("/perfil");
+          return;
+        }
+
+        if (params.mode === "recovery") {
+          setScreenMode("reset");
+          router.replace({
+            pathname: "/perfil",
+            params: { mode: "recovery" },
+          });
         } else {
+          setScreenMode("login");
           setSuccess("¡Correo confirmado correctamente!");
-          setRegisterMode(false);
+          router.replace("/perfil");
         }
       } catch {
         if (active) {
-          setMessage("No pudimos completar la confirmación.");
+          Alert.alert(
+            "Error",
+            "No pudimos procesar el enlace."
+          );
+          router.replace("/perfil");
         }
       } finally {
         if (active) {
           setLoading(false);
-          router.replace("/perfil");
         }
       }
     }
 
-    void confirmEmail();
+    void processAuthLink();
 
     return () => {
       active = false;
     };
-  }, [code, router]);
+  }, [params.code, params.mode, router]);
+
+  // Recuperar el formulario si la ruta se reconstruye.
+  useEffect(() => {
+    if (
+      params.mode === "recovery" &&
+      !params.code &&
+      user
+    ) {
+      setScreenMode("reset");
+    }
+  }, [params.mode, params.code, user?.id]);
 
   // ============================================
-  // CARGAR EL PERFIL DESDE SUPABASE
+  // CARGAR PERFIL
   // ============================================
 
   useEffect(() => {
@@ -152,7 +196,6 @@ export default function PerfilScreen() {
       return;
     }
 
-    // Evitar mostrar los datos de una sesión anterior.
     setProfile(null);
     setEditing(false);
 
@@ -214,8 +257,7 @@ export default function PerfilScreen() {
 
       if (error) {
         setMessage(
-          "No pudimos iniciar sesión. " +
-          "Revisa tus datos o confirma tu correo."
+          "No pudimos iniciar sesión. Revisa tus datos."
         );
         return;
       }
@@ -238,11 +280,11 @@ export default function PerfilScreen() {
     setMessage("");
     setSuccess("");
 
-    const cleanEmail = email.trim().toLowerCase();
     const cleanName = name.trim();
+    const cleanEmail = email.trim().toLowerCase();
 
-    if (cleanName.length < 2) {
-      setMessage("Introduce tu nombre.");
+    if (cleanName.length < 2 || cleanName.length > 100) {
+      setMessage("Introduce un nombre válido.");
       return;
     }
 
@@ -270,7 +312,7 @@ export default function PerfilScreen() {
         email: cleanEmail,
         password,
         options: {
-          emailRedirectTo: REDIRECT_URL,
+          emailRedirectTo: CONFIRM_URL,
           data: {
             full_name: cleanName,
           },
@@ -278,10 +320,7 @@ export default function PerfilScreen() {
       });
 
       if (error) {
-        setMessage(
-          "No pudimos procesar el registro. " +
-          "Revisa tus datos e inténtalo más tarde."
-        );
+        setMessage("No pudimos procesar el registro.");
         return;
       }
 
@@ -289,19 +328,127 @@ export default function PerfilScreen() {
       setConfirmPassword("");
 
       if (data.session) {
-        setSuccess(
-          "Cuenta creada. Ya puedes utilizar DIVIRCO."
-        );
-        setRegisterMode(false);
+        setScreenMode("login");
+        setSuccess("Cuenta creada correctamente.");
       } else {
         setSuccess(
           "Si el registro puede completarse, recibirás " +
-          "un correo con las instrucciones de confirmación. " +
-          "Revisa también la carpeta de spam."
+          "instrucciones en tu correo electrónico."
         );
       }
     } catch {
       setMessage("No pudimos conectar con el servicio.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ============================================
+  // SOLICITAR RECUPERACIÓN DE CONTRASEÑA
+  // ============================================
+
+  async function requestPasswordReset() {
+    if (busy) return;
+
+    setMessage("");
+    setSuccess("");
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setMessage("Introduce un correo válido.");
+      return;
+    }
+
+    setBusy(true);
+
+    try {
+      const { error } =
+        await supabase.auth.resetPasswordForEmail(
+          cleanEmail,
+          {
+            redirectTo: RECOVERY_URL,
+          }
+        );
+
+      if (error) {
+        setMessage(
+          "No pudimos procesar la solicitud. " +
+          "Inténtalo nuevamente más tarde."
+        );
+        return;
+      }
+
+      setSuccess(
+        "Si existe una cuenta asociada a ese correo, " +
+        "recibirás instrucciones para recuperar tu contraseña."
+      );
+    } catch {
+      setMessage("No pudimos conectar con el servicio.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ============================================
+  // ESTABLECER NUEVA CONTRASEÑA
+  // ============================================
+
+  async function updatePassword() {
+    if (busy) return;
+
+    setMessage("");
+    setSuccess("");
+
+    if (newPassword.length < 8) {
+      setMessage(
+        "La nueva contraseña debe tener al menos 8 caracteres."
+      );
+      return;
+    }
+
+    if (newPassword !== confirmNewPassword) {
+      setMessage("Las contraseñas no coinciden.");
+      return;
+    }
+
+    setBusy(true);
+
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (error) {
+        setMessage(
+          "No pudimos actualizar la contraseña."
+        );
+        return;
+      }
+
+      setNewPassword("");
+      setConfirmNewPassword("");
+
+      const { error: signOutError } =
+        await supabase.auth.signOut({ scope: "local" });
+
+      if (signOutError) {
+        setMessage(
+          "La contraseña cambió, pero no pudimos cerrar " +
+          "la sesión local."
+        );
+        return;
+      }
+
+      setScreenMode("login");
+      router.replace("/perfil");
+
+      Alert.alert(
+        "Contraseña actualizada",
+        "Ya puedes iniciar sesión con tu nueva contraseña."
+      );
+    } catch {
+      setMessage("No pudimos completar la operación.");
     } finally {
       setBusy(false);
     }
@@ -328,9 +475,9 @@ export default function PerfilScreen() {
 
       setProfile(null);
       setEditing(false);
+      setScreenMode("login");
       setPassword("");
       setConfirmPassword("");
-      setRegisterMode(false);
     } catch {
       setMessage("No pudimos conectar con el servicio.");
     } finally {
@@ -339,7 +486,7 @@ export default function PerfilScreen() {
   }
 
   // ============================================
-  // GUARDAR CAMBIOS DEL PERFIL
+  // GUARDAR PERFIL
   // ============================================
 
   async function saveProfile() {
@@ -387,7 +534,6 @@ export default function PerfilScreen() {
       setEditName(data.display_name ?? "");
       setEditCity(data.city ?? "");
       setEditing(false);
-
       setSuccess("Perfil actualizado correctamente.");
     } catch {
       setMessage("No pudimos conectar con el servicio.");
@@ -395,10 +541,6 @@ export default function PerfilScreen() {
       setBusy(false);
     }
   }
-
-  // ============================================
-  // CANCELAR EDICIÓN
-  // ============================================
 
   function cancelEditing() {
     if (busy) return;
@@ -411,13 +553,13 @@ export default function PerfilScreen() {
   }
 
   // ============================================
-  // CAMBIAR ENTRE REGISTRO E INICIO DE SESIÓN
+  // CAMBIAR DE FORMULARIO
   // ============================================
 
-  function switchMode() {
+  function changeMode(mode: ScreenMode) {
     if (busy) return;
 
-    setRegisterMode(!registerMode);
+    setScreenMode(mode);
     setMessage("");
     setSuccess("");
     setPassword("");
@@ -428,6 +570,8 @@ export default function PerfilScreen() {
   // INTERFAZ
   // ============================================
 
+  const isResetting = screenMode === "reset";
+
   return (
     <ScreenContainer>
       <ScrollView
@@ -435,42 +579,76 @@ export default function PerfilScreen() {
         keyboardShouldPersistTaps="handled"
         contentContainerClassName="gap-6 px-5 pb-10 pt-8"
       >
-        {/* ENCABEZADO */}
-
         <View className="gap-2">
           <Text className="text-sm font-bold tracking-widest text-brand">
             DIVIRCO
           </Text>
 
           <Text className="text-3xl font-bold text-ink">
-            {user
-              ? "Mi perfil"
-              : registerMode
-                ? "Crear cuenta"
-                : "Iniciar sesión"}
+            {isResetting
+              ? "Nueva contraseña"
+              : user
+                ? "Mi perfil"
+                : screenMode === "signup"
+                  ? "Crear cuenta"
+                  : screenMode === "forgot"
+                    ? "Recuperar contraseña"
+                    : "Iniciar sesión"}
           </Text>
 
           <Text className="text-base leading-6 text-muted">
-            {user
-              ? "Administra tu cuenta de DIVIRCO."
-              : registerMode
-                ? "Regístrate para disfrutar de más funciones."
-                : "Accede con tu cuenta existente."}
+            {isResetting
+              ? "Establece una nueva contraseña para tu cuenta."
+              : user
+                ? "Administra tu cuenta de DIVIRCO."
+                : screenMode === "signup"
+                  ? "Regístrate para disfrutar de más funciones."
+                  : screenMode === "forgot"
+                    ? "Te enviaremos instrucciones a tu correo."
+                    : "Accede con tu cuenta existente."}
           </Text>
         </View>
-
-        {/* CARGA INICIAL */}
 
         {loading ? (
           <ActivityIndicator
             size="large"
             color="#4C22BD"
           />
+        ) : isResetting && user ? (
+          // NUEVA CONTRASEÑA
+          <AppCard>
+            <View className="gap-4">
+              <AppInput
+                label="Nueva contraseña"
+                placeholder="Mínimo 8 caracteres"
+                value={newPassword}
+                onChangeText={setNewPassword}
+                secureTextEntry
+                autoComplete="new-password"
+              />
 
+              <AppInput
+                label="Confirmar nueva contraseña"
+                placeholder="Repite tu contraseña"
+                value={confirmNewPassword}
+                onChangeText={setConfirmNewPassword}
+                secureTextEntry
+                autoComplete="new-password"
+              />
+
+              <AppButton
+                title={
+                  busy
+                    ? "Actualizando..."
+                    : "Guardar nueva contraseña"
+                }
+                onPress={updatePassword}
+                disabled={busy}
+              />
+            </View>
+          </AppCard>
         ) : user ? (
-
-          /* PERFIL AUTENTICADO */
-
+          // PERFIL AUTENTICADO
           <AppCard>
             <View className="gap-5">
               {editing ? (
@@ -498,11 +676,7 @@ export default function PerfilScreen() {
                   />
 
                   <AppButton
-                    title={
-                      busy
-                        ? "Guardando..."
-                        : "Guardar cambios"
-                    }
+                    title={busy ? "Guardando..." : "Guardar cambios"}
                     onPress={saveProfile}
                     disabled={busy}
                   />
@@ -556,14 +730,48 @@ export default function PerfilScreen() {
               )}
             </View>
           </AppCard>
-
-        ) : (
-
-          /* INICIO DE SESIÓN Y REGISTRO */
-
+        ) : screenMode === "forgot" ? (
+          // SOLICITAR RECUPERACIÓN
           <AppCard>
             <View className="gap-4">
-              {registerMode ? (
+              <AppInput
+                label="Correo electrónico"
+                placeholder="correo@ejemplo.com"
+                value={email}
+                onChangeText={setEmail}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+                autoComplete="email"
+              />
+
+              <AppButton
+                title={
+                  busy
+                    ? "Enviando..."
+                    : "Enviar instrucciones"
+                }
+                onPress={requestPasswordReset}
+                disabled={busy}
+              />
+
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => changeMode("login")}
+                disabled={busy}
+                className="items-center py-3"
+              >
+                <Text className="font-semibold text-brand">
+                  Volver a iniciar sesión
+                </Text>
+              </Pressable>
+            </View>
+          </AppCard>
+        ) : (
+          // INICIAR SESIÓN O REGISTRARSE
+          <AppCard>
+            <View className="gap-4">
+              {screenMode === "signup" ? (
                 <AppInput
                   label="Nombre completo"
                   placeholder="Tu nombre"
@@ -592,13 +800,13 @@ export default function PerfilScreen() {
                 onChangeText={setPassword}
                 secureTextEntry
                 autoComplete={
-                  registerMode
+                  screenMode === "signup"
                     ? "new-password"
                     : "current-password"
                 }
               />
 
-              {registerMode ? (
+              {screenMode === "signup" ? (
                 <AppInput
                   label="Confirmar contraseña"
                   placeholder="Repite tu contraseña"
@@ -613,24 +821,43 @@ export default function PerfilScreen() {
                 title={
                   busy
                     ? "Procesando..."
-                    : registerMode
+                    : screenMode === "signup"
                       ? "Crear cuenta"
                       : "Iniciar sesión"
                 }
                 onPress={
-                  registerMode ? signUp : signIn
+                  screenMode === "signup" ? signUp : signIn
                 }
                 disabled={busy}
               />
 
+              {screenMode === "login" ? (
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={() => changeMode("forgot")}
+                  className="items-center py-2"
+                >
+                  <Text className="font-semibold text-brand">
+                    ¿Olvidaste tu contraseña?
+                  </Text>
+                </Pressable>
+              ) : null}
+
               <Pressable
                 accessibilityRole="button"
                 disabled={busy}
-                onPress={switchMode}
+                onPress={() =>
+                  changeMode(
+                    screenMode === "signup"
+                      ? "login"
+                      : "signup"
+                  )
+                }
                 className="items-center py-3"
               >
                 <Text className="text-center font-semibold text-brand">
-                  {registerMode
+                  {screenMode === "signup"
                     ? "¿Ya tienes cuenta? Iniciar sesión"
                     : "¿No tienes cuenta? Regístrate"}
                 </Text>
@@ -638,8 +865,6 @@ export default function PerfilScreen() {
             </View>
           </AppCard>
         )}
-
-        {/* MENSAJES DE ERROR */}
 
         {message ? (
           <Text
@@ -649,8 +874,6 @@ export default function PerfilScreen() {
             {message}
           </Text>
         ) : null}
-
-        {/* MENSAJES DE ÉXITO */}
 
         {success ? (
           <Text
