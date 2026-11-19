@@ -1,6 +1,7 @@
 
 import "expo-sqlite/localStorage/install";
 import "react-native-url-polyfill/auto";
+import "./crypto-polyfill";
 
 import { createClient } from "@supabase/supabase-js";
 import { AppState, Platform } from "react-native";
@@ -18,6 +19,7 @@ export const supabase = createClient(url, key, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: false,
+    flowType: "pkce",
   },
 });
 
